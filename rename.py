@@ -806,5 +806,10 @@ def main(argv: Sequence[str]) -> int:
     return 0
 
 
-if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+def _cli_entrypoint() -> int:
+    """Executa a CLI e retorna o código de saída."""
+    return main(sys.argv)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(_cli_entrypoint())
