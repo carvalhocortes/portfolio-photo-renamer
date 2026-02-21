@@ -157,10 +157,10 @@ def _safe_float(value: Any) -> Optional[float]:
 
 def _safe_int(value: Any) -> Optional[int]:
     """Converte <value> para int de forma segura, retornando None em falha."""
-    f = _safe_float(value)
-    if f is None:
+    number = _safe_float(value)
+    if number is None:
         return None
-    return int(round(f))
+    return int(round(number))
 
 
 def _first_tag_value(
@@ -173,6 +173,14 @@ def _first_tag_value(
     return None
 
 
+def _same_file(path_a: Path, path_b: Path) -> bool:
+    """Retorna True se <path_a> e <path_b> apontam para o mesmo arquivo."""
+    try:
+        return path_a.samefile(path_b)
+    except FileNotFoundError:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Dataclasses de domínio
 # ---------------------------------------------------------------------------
@@ -182,7 +190,7 @@ def _first_tag_value(
 class ImageInfo:
     """Contém os metadados extraídos de um arquivo de mídia."""
 
-    caminho_origem: Path
+    source_path: Path
     timestamp: Optional[datetime] = None
     model: Optional[str] = None
     gps_lat: Optional[float] = None
@@ -198,8 +206,8 @@ class ImageInfo:
 class RenameResult:
     """Resultado da tentativa de renomear um arquivo."""
 
-    src: Path
-    dst: Optional[Path] = None
+    source_path: Path
+    target_path: Optional[Path] = None
     success: bool = False
     reason: str = ""
 
@@ -212,7 +220,7 @@ class RenameResult:
 class ExifReaderProtocol(Protocol):
     """Protocolo para leitura de metadados de um arquivo."""
 
-    def read(self, caminho: Path) -> Dict[str, Any]: ...
+    def read(self, path: Path) -> Dict[str, Any]: ...
 
 
 class FilenameFactoryProtocol(Protocol):
@@ -224,7 +232,7 @@ class FilenameFactoryProtocol(Protocol):
 class CollisionResolverProtocol(Protocol):
     """Protocolo para resolução de colisão de nomes de arquivo."""
 
-    def resolve(self, destino: Path) -> Path: ...
+    def resolve(self, target: Path) -> Path: ...
 
 
 # ---------------------------------------------------------------------------
@@ -241,13 +249,13 @@ class ExifReader:
         self._exiftool = shutil.which(exiftool_cmd)
         self._timeout = timeout
 
-    def read(self, caminho: Path) -> Dict[str, Any]:
-        """Extrai todos os metadados de <caminho> via ExifTool."""
+    def read(self, path: Path) -> Dict[str, Any]:
+        """Extrai todos os metadados de <path> via ExifTool."""
         if not self._exiftool:
             raise RuntimeError("exiftool não encontrado no PATH")
         try:
-            resultado = subprocess.run(
-                [self._exiftool, "-n", "-j", str(caminho)],
+            result = subprocess.run(
+                [self._exiftool, "-n", "-j", str(path)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -259,10 +267,10 @@ class ExifReader:
             ) from exc
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(
-                f"exiftool excedeu timeout de {exc.timeout}s para {caminho}"
+                f"exiftool excedeu timeout de {exc.timeout}s para {path}"
             ) from exc
 
-        entries = json.loads(resultado.stdout)
+        entries = json.loads(result.stdout)
         if not entries:
             return {}
         return entries[0]
@@ -277,28 +285,28 @@ class DateExtractor:
     """Extrai timestamp dos metadados com múltiplos formatos."""
 
     def extract(
-        self, tags: Dict[str, Any], caminho: Path
+        self, tags: Dict[str, Any], path: Path
     ) -> Optional[datetime]:
         """Retorna o datetime do primeiro tag de data válido encontrado."""
         for tag_name in DATE_TAGS:
             raw = tags.get(tag_name)
             if raw is None:
                 continue
-            valor = str(raw).strip()
-            if valor in ZERO_DATES:
+            value = str(raw).strip()
+            if value in ZERO_DATES:
                 continue
-            parsed = self._parse_datetime(valor)
+            parsed = self._parse_datetime(value)
             if parsed is not None:
                 return parsed
         return None
 
-    def _parse_datetime(self, valor: str) -> Optional[datetime]:
-        """Tenta parsear <valor> em múltiplos formatos de data."""
+    def _parse_datetime(self, value: str) -> Optional[datetime]:
+        """Tenta parsear <value> em múltiplos formatos de data."""
         # Remove subsegundos com timezone colado (ex: ".993-03:00")
-        limpo = re.sub(r"\.\d+", "", valor)
+        cleaned = re.sub(r"\.\d+", "", value)
         for fmt in DATE_FORMATS:
             try:
-                dt = datetime.strptime(limpo, fmt)
+                dt = datetime.strptime(cleaned, fmt)
                 # Normaliza para naive (sem timezone) para consistência no nome
                 return dt.replace(tzinfo=None) if dt.tzinfo else dt
             except ValueError:
@@ -309,20 +317,20 @@ class DateExtractor:
 class ModelExtractor:
     """Extrai o modelo da câmera dos metadados."""
 
-    def extract(self, tags: Dict[str, Any], caminho: Path) -> Optional[str]:
+    def extract(self, tags: Dict[str, Any], path: Path) -> Optional[str]:
         """Retorna o modelo da câmera limpo, ou None."""
         raw = _first_tag_value(tags, MODEL_TAGS)
         if raw is None:
             return None
-        modelo = str(raw).strip()
-        return modelo if modelo else None
+        model = str(raw).strip()
+        return model if model else None
 
 
 class GPSExtractor:
     """Extrai coordenadas GPS em graus decimais."""
 
     def extract(
-        self, tags: Dict[str, Any], caminho: Path
+        self, tags: Dict[str, Any], path: Path
     ) -> Optional[Tuple[float, float]]:
         """Retorna (latitude, longitude) em decimal, ou None."""
         lat_raw = _first_tag_value(tags, GPS_LAT_TAGS)
@@ -342,7 +350,7 @@ class DimensionExtractor:
     """Extrai dimensões (largura x altura) em pixels."""
 
     def extract(
-        self, tags: Dict[str, Any], caminho: Path
+        self, tags: Dict[str, Any], path: Path
     ) -> Optional[Tuple[int, int]]:
         """Retorna (width, height) ou None se indisponível."""
         width = self._first_int(tags, WIDTH_TAGS)
@@ -364,7 +372,7 @@ class PPIExtractor:
 
     INCHES_UNIT = 2
 
-    def extract(self, tags: Dict[str, Any], caminho: Path) -> Optional[int]:
+    def extract(self, tags: Dict[str, Any], path: Path) -> Optional[int]:
         """Retorna PPI inteiro ou None se não disponível/confiável."""
         unit_raw = _first_tag_value(tags, RESOLUTION_UNIT_TAGS)
         unit = _safe_int(unit_raw)
@@ -381,10 +389,10 @@ class PPIExtractor:
 class SizeExtractor:
     """Extrai o tamanho do arquivo em bytes via sistema de arquivos."""
 
-    def extract(self, tags: Dict[str, Any], caminho: Path) -> int:
+    def extract(self, tags: Dict[str, Any], path: Path) -> int:
         """Retorna o tamanho em bytes do arquivo (sempre disponível)."""
         try:
-            return caminho.stat().st_size
+            return path.stat().st_size
         except OSError:
             return 0
 
@@ -413,17 +421,17 @@ class MetadataExtractor:
         self._ppi = ppi_extractor
         self._size = size_extractor
 
-    def extract_all(self, tags: Dict[str, Any], caminho: Path) -> ImageInfo:
+    def extract_all(self, tags: Dict[str, Any], path: Path) -> ImageInfo:
         """Extrai todos os campos independentemente e retorna ImageInfo."""
-        timestamp = self._date.extract(tags, caminho)
-        model = self._model.extract(tags, caminho)
-        gps = self._gps.extract(tags, caminho)
-        dims = self._dimension.extract(tags, caminho)
-        ppi = self._ppi.extract(tags, caminho)
-        size_bytes = self._size.extract(tags, caminho)
+        timestamp = self._date.extract(tags, path)
+        model = self._model.extract(tags, path)
+        gps = self._gps.extract(tags, path)
+        dims = self._dimension.extract(tags, path)
+        ppi = self._ppi.extract(tags, path)
+        size_bytes = self._size.extract(tags, path)
 
         return ImageInfo(
-            caminho_origem=caminho,
+            source_path=path,
             timestamp=timestamp,
             model=model,
             gps_lat=gps[0] if gps else None,
@@ -432,7 +440,7 @@ class MetadataExtractor:
             height=dims[1] if dims else None,
             ppi=ppi,
             size_bytes=size_bytes,
-            extension=caminho.suffix.lower(),
+            extension=path.suffix.lower(),
         )
 
 
@@ -446,37 +454,37 @@ class FilenameFactory:
 
     def format(self, info: ImageInfo) -> str:
         """Gera o nome no padrão YYYYMMDD_HHMMSS[_campos...].ext."""
-        partes: List[str] = []
+        parts: List[str] = []
 
         # Data/hora (obrigatório para nome válido)
         if info.timestamp:
-            partes.append(info.timestamp.strftime("%Y%m%d"))
-            partes.append(info.timestamp.strftime("%H%M%S"))
+            parts.append(info.timestamp.strftime("%Y%m%d"))
+            parts.append(info.timestamp.strftime("%H%M%S"))
 
         # GPS em decimal
         if info.gps_lat is not None and info.gps_lon is not None:
-            partes.append(f"{info.gps_lat:.6f},{info.gps_lon:.6f}")
+            parts.append(f"{info.gps_lat:.6f},{info.gps_lon:.6f}")
 
         # Modelo da câmera
         if info.model:
-            partes.append(slugify(info.model))
+            parts.append(slugify(info.model))
 
         # Dimensões em pixels
         if info.width is not None and info.height is not None:
-            partes.append(f"{info.width}x{info.height}px")
+            parts.append(f"{info.width}x{info.height}px")
 
         # PPI
         if info.ppi is not None:
-            partes.append(f"{info.ppi}ppi")
+            parts.append(f"{info.ppi}ppi")
 
         # Tamanho em KB com 2 casas decimais
         if info.size_bytes > 0:
-            tamanho_kb = info.size_bytes / 1024
-            partes.append(f"{tamanho_kb:.2f}KB")
+            size_kb = info.size_bytes / 1024
+            parts.append(f"{size_kb:.2f}KB")
 
-        nome = "_".join(partes)
-        if nome:
-            return f"{nome}{info.extension}"
+        name = "_".join(parts)
+        if name:
+            return f"{name}{info.extension}"
         return f"sem_nome{info.extension}"
 
 
@@ -491,22 +499,22 @@ class SuffixCollisionResolver:
     def __init__(self, max_tentativas: int = 999) -> None:
         self._max_tentativas = max_tentativas
 
-    def resolve(self, destino: Path) -> Path:
+    def resolve(self, target: Path) -> Path:
         """Retorna um Path único, adicionando sufixo se necessário."""
-        if not destino.exists():
-            return destino
+        if not target.exists():
+            return target
 
-        stem = destino.stem
-        suffix = destino.suffix
-        diretorio = destino.parent
+        stem = target.stem
+        suffix = target.suffix
+        directory = target.parent
 
         for i in range(1, self._max_tentativas + 1):
-            candidato = diretorio / f"{stem}_{i:02d}{suffix}"
-            if not candidato.exists():
-                return candidato
+            candidate = directory / f"{stem}_{i:02d}{suffix}"
+            if not candidate.exists():
+                return candidate
 
         raise RuntimeError(
-            f"Não foi possível resolver colisão para {destino} "
+            f"Não foi possível resolver colisão para {target} "
             f"após {self._max_tentativas} tentativas"
         )
 
@@ -533,82 +541,104 @@ class ImageRenamer:
         self._resolver = resolver
         self._dry_run = dry_run
 
-    def process(self, caminho: Path) -> RenameResult:
-        """Tenta renomear <caminho> com base nos metadados extraídos."""
+    def process(self, path: Path) -> RenameResult:
+        """Tenta renomear <path> com base nos metadados extraídos."""
         try:
-            tags = self._reader.read(caminho)
+            tags = self._reader.read(path)
         except FileNotFoundError:
-            return RenameResult(src=caminho, reason="arquivo não encontrado")
+            return RenameResult(
+                source_path=path, reason="arquivo não encontrado"
+            )
         except RuntimeError as exc:
-            return RenameResult(src=caminho, reason=f"erro ao ler: {exc}")
+            return RenameResult(source_path=path, reason=f"erro ao ler: {exc}")
 
-        info = self._extractor.extract_all(tags, caminho)
+        info = self._extractor.extract_all(tags, path)
 
         # Sem timestamp → prefixar com _ para evitar reprocessamento
         if info.timestamp is None:
-            return self._prefixar_sem_data(caminho, info)
+            return self._prefix_without_date(path, info)
 
-        novo_nome = self._factory.format(info)
-        destino = caminho.with_name(novo_nome)
+        new_name = self._factory.format(info)
+        target = path.with_name(new_name)
 
-        # Mesmo nome → nada a fazer
-        if destino == caminho:
+        if target.exists() and _same_file(target, path):
             return RenameResult(
-                src=caminho,
-                dst=caminho,
+                source_path=path,
+                target_path=path,
                 success=True,
                 reason="nome já correto",
             )
 
-        destino = self._resolver.resolve(destino)
+        # Mesmo nome → nada a fazer
+        if target == path:
+            return RenameResult(
+                source_path=path,
+                target_path=path,
+                success=True,
+                reason="nome já correto",
+            )
 
-        if self._dry_run:
-            return RenameResult(src=caminho, dst=destino, success=True)
-
-        try:
-            caminho.rename(destino)
-        except OSError as exc:
-            return RenameResult(src=caminho, reason=f"erro ao renomear: {exc}")
-
-        return RenameResult(src=caminho, dst=destino, success=True)
-
-    def _prefixar_sem_data(
-        self, caminho: Path, info: ImageInfo
-    ) -> RenameResult:
-        """Prefixa sem data com '_' incluindo dimensões e tamanho."""
-        nome_atual = caminho.name
-
-        # Constrói sufixo informativo mesmo sem data
-        partes: List[str] = []
-        if info.width is not None and info.height is not None:
-            partes.append(f"{info.width}x{info.height}px")
-        if info.ppi is not None:
-            partes.append(f"{info.ppi}ppi")
-        if info.size_bytes > 0:
-            partes.append(f"{info.size_bytes / 1024:.2f}KB")
-
-        sufixo_info = "_".join(partes)
-        if sufixo_info:
-            novo_nome = f"_{sufixo_info}{info.extension}"
-        else:
-            novo_nome = f"_{nome_atual}"
-
-        destino = caminho.with_name(novo_nome)
-        if destino.exists():
-            destino = self._resolver.resolve(destino)
+        target = self._resolver.resolve(target)
 
         if self._dry_run:
             return RenameResult(
-                src=caminho, dst=destino, success=True, reason="sem data"
+                source_path=path, target_path=target, success=True
             )
 
         try:
-            caminho.rename(destino)
+            path.rename(target)
         except OSError as exc:
-            return RenameResult(src=caminho, reason=f"erro ao prefixar: {exc}")
+            return RenameResult(
+                source_path=path, reason=f"erro ao renomear: {exc}"
+            )
+
+        return RenameResult(source_path=path, target_path=target, success=True)
+
+    def _prefix_without_date(
+        self, path: Path, info: ImageInfo
+    ) -> RenameResult:
+        """Prefixa sem data com '_' incluindo dimensões e tamanho."""
+        current_name = path.name
+
+        # Constrói sufixo informativo mesmo sem data
+        parts: List[str] = []
+        if info.width is not None and info.height is not None:
+            parts.append(f"{info.width}x{info.height}px")
+        if info.ppi is not None:
+            parts.append(f"{info.ppi}ppi")
+        if info.size_bytes > 0:
+            parts.append(f"{info.size_bytes / 1024:.2f}KB")
+
+        info_suffix = "_".join(parts)
+        if info_suffix:
+            new_name = f"_{info_suffix}{info.extension}"
+        else:
+            new_name = f"_{current_name}"
+
+        target = path.with_name(new_name)
+        if target.exists():
+            target = self._resolver.resolve(target)
+
+        if self._dry_run:
+            return RenameResult(
+                source_path=path,
+                target_path=target,
+                success=True,
+                reason="sem data",
+            )
+
+        try:
+            path.rename(target)
+        except OSError as exc:
+            return RenameResult(
+                source_path=path, reason=f"erro ao prefixar: {exc}"
+            )
 
         return RenameResult(
-            src=caminho, dst=destino, success=True, reason="sem data"
+            source_path=path,
+            target_path=target,
+            success=True,
+            reason="sem data",
         )
 
 
@@ -628,46 +658,46 @@ class DirectoryProcessor:
         self._renamer = renamer
         self._extensions = extensions
 
-    def process(self, caminho: Path) -> List[RenameResult]:
-        """Processa <caminho> (arquivo ou diretório) e retorna resultados."""
-        resultados: List[RenameResult] = []
+    def process(self, path: Path) -> List[RenameResult]:
+        """Processa <path> (arquivo ou diretório) e retorna resultados."""
+        results: List[RenameResult] = []
 
-        if caminho.is_file():
-            resultado = self._processar_arquivo(caminho)
-            if resultado is not None:
-                resultados.append(resultado)
-        elif caminho.is_dir():
-            resultados.extend(self._processar_diretorio(caminho))
+        if path.is_file():
+            result = self._process_file(path)
+            if result is not None:
+                results.append(result)
+        elif path.is_dir():
+            results.extend(self._process_directory(path))
         else:
-            print(f"Caminho inválido: {caminho}")
+            print(f"Caminho inválido: {path}")
 
-        return resultados
+        return results
 
-    def _processar_arquivo(self, caminho: Path) -> Optional[RenameResult]:
+    def _process_file(self, path: Path) -> Optional[RenameResult]:
         """Processa um arquivo se sua extensão for suportada."""
-        if caminho.suffix.lower() not in self._extensions:
+        if path.suffix.lower() not in self._extensions:
             return None
-        return self._renamer.process(caminho)
+        return self._renamer.process(path)
 
-    def _processar_diretorio(self, caminho: Path) -> List[RenameResult]:
-        """Percorre recursivamente <caminho> e processa todos os arquivos."""
-        resultados: List[RenameResult] = []
-        print(f"\nProcessando diretório: {caminho}")
+    def _process_directory(self, path: Path) -> List[RenameResult]:
+        """Percorre recursivamente <path> e processa todos os arquivos."""
+        results: List[RenameResult] = []
+        print(f"\nProcessando diretório: {path}")
 
-        entradas = sorted(caminho.iterdir())
-        for entrada in entradas:
-            if entrada.is_file():
-                resultado = self._processar_arquivo(entrada)
-                if resultado is not None:
-                    resultados.append(resultado)
+        entries = sorted(path.iterdir())
+        for entry in entries:
+            if entry.is_file():
+                result = self._process_file(entry)
+                if result is not None:
+                    results.append(result)
             elif (
-                entrada.is_dir()
-                and not entrada.name.startswith(".")
-                and entrada.name not in IGNORED_DIRS
+                entry.is_dir()
+                and not entry.name.startswith(".")
+                and entry.name not in IGNORED_DIRS
             ):
-                resultados.extend(self._processar_diretorio(entrada))
+                results.extend(self._process_directory(entry))
 
-        return resultados
+        return results
 
 
 # ---------------------------------------------------------------------------
@@ -702,34 +732,40 @@ def build_components(
 # ---------------------------------------------------------------------------
 
 
-def _imprimir_relatorio(resultados: List[RenameResult]) -> None:
+def _print_report(results: List[RenameResult]) -> None:
     """Imprime resumo dos resultados de renomeação."""
-    renomeados = 0
-    sem_data = 0
-    erros = 0
+    renamed_count = 0
+    no_date_count = 0
+    error_count = 0
 
-    for r in resultados:
-        if r.success and r.dst and r.dst != r.src:
+    for r in results:
+        if r.success and r.target_path and r.target_path != r.source_path:
             if r.reason == "sem data":
-                sem_data += 1
-                print(f"  [SEM DATA] {r.src.name} → {r.dst.name}")
+                no_date_count += 1
+                print(
+                    f"  [SEM DATA] {r.source_path.name} "
+                    f"→ {r.target_path.name}"
+                )
             else:
-                renomeados += 1
-                print(f"  [OK] {r.src.name} → {r.dst.name}")
+                renamed_count += 1
+                print(
+                    f"  [OK] {r.source_path.name} "
+                    f"→ {r.target_path.name}"
+                )
         elif r.success and r.reason == "nome já correto":
             pass  # Silencioso para arquivos que já têm o nome correto
         elif not r.success:
-            erros += 1
-            print(f"  [ERRO] {r.src.name}: {r.reason}")
+            error_count += 1
+            print(f"  [ERRO] {r.source_path.name}: {r.reason}")
 
     print("\n--- Resumo ---")
-    print(f"  Total processados: {len(resultados)}")
-    print(f"  Renomeados:        {renomeados}")
-    print(f"  Sem data (prefixo _): {sem_data}")
-    print(f"  Erros:             {erros}")
+    print(f"  Total processados: {len(results)}")
+    print(f"  Renomeados:        {renamed_count}")
+    print(f"  Sem data (prefixo _): {no_date_count}")
+    print(f"  Erros:             {error_count}")
     print(
         f"  Sem alteração:     "
-        f"{len(resultados) - renomeados - sem_data - erros}"
+        f"{len(results) - renamed_count - no_date_count - error_count}"
     )
 
 
@@ -749,19 +785,19 @@ def main(argv: Sequence[str]) -> int:
         print("Uso: python rename.py [--dry-run] [caminho_da_imagem_ou_pasta]")
         return 1
 
-    caminho = Path(args[0]) if args else Path(".")
+    path = Path(args[0]) if args else Path(".")
     _, processor = build_components(dry_run=dry_run)
 
     if dry_run:
         print("*** MODO DRY-RUN: nenhum arquivo será renomeado ***\n")
 
     try:
-        resultados = processor.process(caminho)
+        results = processor.process(path)
     except RuntimeError as exc:
         print(f"Erro crítico: {exc}")
         return 1
 
-    _imprimir_relatorio(resultados)
+    _print_report(results)
     return 0
 
 

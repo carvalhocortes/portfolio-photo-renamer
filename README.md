@@ -12,6 +12,9 @@ Campos sao adicionados quando disponiveis. Arquivos sem data EXIF recebem prefix
 `_` e ainda incluem dimensoes e tamanho. O script processa pastas recursivamente
 e resolve colisoes com sufixos `_01`, `_02`, etc.
 
+Os identificadores no codigo estao em ingles, enquanto docstrings e mensagens
+continuam em portugues.
+
 ## Requisitos
 
 - Python 3.10+

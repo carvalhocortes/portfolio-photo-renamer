@@ -36,7 +36,8 @@ Arquivos com `_` no inicio nao sao mais ignorados automaticamente.
 
 ### Dataclasses
 
-`ImageInfo` (extracted metadata fields), `RenameResult` (src, dst, success, reason).
+`ImageInfo` (extracted metadata fields),
+`RenameResult` (`source_path`, `target_path`, `success`, `reason`).
 
 ## 2 — Setup
 
@@ -130,13 +131,13 @@ Black defaults: 88-char lines, double quotes, trailing commas in multi-line stru
 |---|---|---|
 | Classes | PascalCase | `ExifReader`, `ImageRenamer`, `PPIExtractor` |
 | Functions/methods | snake_case | `slugify()`, `extract_all()` |
-| Private methods | `_leading_underscore` | `_parse_datetime()`, `_processar_diretorio()` |
+| Private methods | `_leading_underscore` | `_parse_datetime()`, `_process_directory()` |
 | Constants | UPPER_SNAKE_CASE | `DATE_TAGS`, `IGNORED_DIRS`, `SUPPORTED_EXTENSIONS` |
-| Variables | snake_case | `caminho_imagem`, `novo_nome`, `resultados` |
-| Dataclass fields | snake_case | `gps_lat`, `size_bytes`, `caminho_origem` |
+| Variables | snake_case | `new_name`, `results`, `error_count` |
+| Dataclass fields | snake_case | `gps_lat`, `size_bytes`, `source_path` |
 
-**Bilingual convention**: variable names, docstrings, and user-facing messages are in
-**Portuguese**. Class names, constants, and Protocol names are in **English**.
+**Convention**: identifiers (variables, functions, classes, attributes) in **English**.
+Docstrings and user-facing messages in **Portuguese**.
 
 ### Type annotations
 
