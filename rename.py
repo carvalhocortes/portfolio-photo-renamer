@@ -128,6 +128,9 @@ ZERO_DATES = {"0000:00:00 00:00:00", "0000:00:00", ""}
 
 IGNORED_DIRS = {"venv", "__pycache__", "node_modules", ".git"}
 
+REASON_NO_DATE = "sem data"
+REASON_NAME_OK = "nome já correto"
+
 
 # ---------------------------------------------------------------------------
 # Utilitários
@@ -179,6 +182,13 @@ def _same_file(path_a: Path, path_b: Path) -> bool:
         return path_a.samefile(path_b)
     except FileNotFoundError:
         return False
+
+
+def _name_already_correct(path: Path, target: Path) -> bool:
+    """Retorna True se <target> representa o mesmo arquivo de <path>."""
+    if target == path:
+        return True
+    return target.exists() and _same_file(target, path)
 
 
 # ---------------------------------------------------------------------------
@@ -560,45 +570,12 @@ class ImageRenamer:
 
         new_name = self._factory.format(info)
         target = path.with_name(new_name)
-
-        if target.exists() and _same_file(target, path):
-            return RenameResult(
-                source_path=path,
-                target_path=path,
-                success=True,
-                reason="nome já correto",
-            )
-
-        # Mesmo nome → nada a fazer
-        if target == path:
-            return RenameResult(
-                source_path=path,
-                target_path=path,
-                success=True,
-                reason="nome já correto",
-            )
-
-        target = self._resolver.resolve(target)
-
-        if self._dry_run:
-            return RenameResult(
-                source_path=path, target_path=target, success=True
-            )
-
-        try:
-            path.rename(target)
-        except OSError as exc:
-            return RenameResult(
-                source_path=path, reason=f"erro ao renomear: {exc}"
-            )
-
-        return RenameResult(source_path=path, target_path=target, success=True)
+        return self._rename(path, target, error_action="renomear")
 
     def _prefix_without_date(
         self, path: Path, info: ImageInfo
     ) -> RenameResult:
-        """Prefixa sem data com '_' incluindo dimensões e tamanho."""
-        current_name = path.name
+        """Acrescenta dados ao nome original quando não há data."""
 
         # Constrói sufixo informativo mesmo sem data
         parts: List[str] = []
@@ -610,12 +587,40 @@ class ImageRenamer:
             parts.append(f"{info.size_bytes / 1024:.2f}KB")
 
         info_suffix = "_".join(parts)
-        if info_suffix:
-            new_name = f"_{info_suffix}{info.extension}"
-        else:
-            new_name = f"_{current_name}"
+        if not info_suffix:
+            return RenameResult(
+                source_path=path,
+                target_path=path,
+                success=True,
+                reason=REASON_NAME_OK,
+            )
 
+        base_stem = path.stem.lstrip("_")
+        new_name = f"_{base_stem}_{info_suffix}{info.extension}"
         target = path.with_name(new_name)
+        return self._rename(
+            path,
+            target,
+            success_reason=REASON_NO_DATE,
+            error_action="prefixar",
+        )
+
+    def _rename(
+        self,
+        path: Path,
+        target: Path,
+        success_reason: str = "",
+        error_action: str = "renomear",
+    ) -> RenameResult:
+        """Resolve colisão, aplica dry-run e renomeia o arquivo."""
+        if _name_already_correct(path, target):
+            return RenameResult(
+                source_path=path,
+                target_path=path,
+                success=True,
+                reason=REASON_NAME_OK,
+            )
+
         if target.exists():
             target = self._resolver.resolve(target)
 
@@ -624,21 +629,21 @@ class ImageRenamer:
                 source_path=path,
                 target_path=target,
                 success=True,
-                reason="sem data",
+                reason=success_reason,
             )
 
         try:
             path.rename(target)
         except OSError as exc:
             return RenameResult(
-                source_path=path, reason=f"erro ao prefixar: {exc}"
+                source_path=path, reason=f"erro ao {error_action}: {exc}"
             )
 
         return RenameResult(
             source_path=path,
             target_path=target,
             success=True,
-            reason="sem data",
+            reason=success_reason,
         )
 
 
@@ -740,7 +745,7 @@ def _print_report(results: List[RenameResult]) -> None:
 
     for r in results:
         if r.success and r.target_path and r.target_path != r.source_path:
-            if r.reason == "sem data":
+            if r.reason == REASON_NO_DATE:
                 no_date_count += 1
                 print(
                     f"  [SEM DATA] {r.source_path.name} "
@@ -752,7 +757,7 @@ def _print_report(results: List[RenameResult]) -> None:
                     f"  [OK] {r.source_path.name} "
                     f"→ {r.target_path.name}"
                 )
-        elif r.success and r.reason == "nome já correto":
+        elif r.success and r.reason == REASON_NAME_OK:
             pass  # Silencioso para arquivos que já têm o nome correto
         elif not r.success:
             error_count += 1
